@@ -1,0 +1,6 @@
+/target
+
+# Never commit real vaults or Secret Keys
+vault.json
+*.vault
+.svault/
