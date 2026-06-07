@@ -18,7 +18,9 @@ pub const DEFAULT_CLEAR_SECS: u64 = 15;
 pub fn copy_with_autoclear(text: &str, secs: u64) -> Result<()> {
     let mut cb = arboard::Clipboard::new().context("open clipboard")?;
     cb.set_text(text.to_owned()).context("write clipboard")?;
-    println!("📋 Copied to clipboard. Auto-clearing in {secs}s (Ctrl-C clears on exit)…");
+    // Honest wording: there is no SIGINT handler, so Ctrl-C aborts BEFORE the
+    // clear runs and the secret stays on the clipboard. Keep the window open.
+    println!("📋 Copied to clipboard. Auto-clearing in {secs}s — keep this window open (Ctrl-C aborts WITHOUT clearing).");
 
     std::thread::sleep(Duration::from_secs(secs));
 

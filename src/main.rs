@@ -14,7 +14,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "svault", version, about = "Zero-knowledge dual-secret password vault (learning-grade)")]
+#[command(
+    name = "svault",
+    version,
+    about = "Zero-knowledge dual-secret password vault (learning-grade)"
+)]
 struct Cli {
     /// Path to the vault file (default: ~/.svault/vault.json)
     #[arg(long, global = true)]
@@ -128,7 +132,7 @@ fn cmd_init(path: &std::path::Path) -> Result<()> {
     println!("\n✅ Vault created at {}", path.display());
     println!("\n────────────────────────────────────────────────────────");
     println!("  YOUR SECRET KEY (write this down — shown only once):");
-    println!("\n      {shown}");
+    println!("\n      {}", *shown);
     println!("\n  Without BOTH this Secret Key and your master password,");
     println!("  the vault is UNRECOVERABLE. We never store the Secret Key.");
     println!("────────────────────────────────────────────────────────\n");

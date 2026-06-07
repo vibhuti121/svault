@@ -9,6 +9,7 @@
 use anyhow::{anyhow, Result};
 use hmac::{Hmac, Mac};
 use sha1::Sha1; // RFC 6238 default algorithm is HMAC-SHA1
+use zeroize::Zeroizing;
 
 type HmacSha1 = Hmac<Sha1>;
 
@@ -17,15 +18,19 @@ pub const DEFAULT_DIGITS: u32 = 6;
 
 /// Decode a user-supplied base32 TOTP seed: strip spaces, uppercase, drop any
 /// '=' padding, then RFC 4648 base32 (no-pad) decode.
-pub fn decode_secret(seed: &str) -> Result<Vec<u8>> {
-    let cleaned: String = seed
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '=')
-        .map(|c| c.to_ascii_uppercase())
-        .collect();
-    data_encoding::BASE32_NOPAD
+pub fn decode_secret(seed: &str) -> Result<Zeroizing<Vec<u8>>> {
+    let cleaned: Zeroizing<String> = Zeroizing::new(
+        seed.chars()
+            .filter(|c| !c.is_whitespace() && *c != '=')
+            .map(|c| c.to_ascii_uppercase())
+            .collect(),
+    );
+    // The decoded bytes are the long-lived HMAC seed (your 2FA secret) — wrap in
+    // `Zeroizing` so they get the same wipe-on-drop treatment as passwords.
+    let bytes = data_encoding::BASE32_NOPAD
         .decode(cleaned.as_bytes())
-        .map_err(|e| anyhow!("invalid base32 TOTP seed: {e}"))
+        .map_err(|e| anyhow!("invalid base32 TOTP seed: {e}"))?;
+    Ok(Zeroizing::new(bytes))
 }
 
 /// Compute the OTP for a given unix timestamp. Pure function → easy to test
@@ -34,9 +39,16 @@ pub fn code_at(secret: &[u8], unix_time: u64, period: u64, digits: u32) -> Resul
     if secret.is_empty() {
         return Err(anyhow!("empty TOTP secret"));
     }
+    // Guard the public surface: period==0 would divide-by-zero and digits>=10
+    // would overflow 10^digits in u32. The CLI only ever passes 30/6.
+    if period == 0 {
+        return Err(anyhow!("TOTP period must be > 0"));
+    }
+    if !(1..=9).contains(&digits) {
+        return Err(anyhow!("TOTP digits must be 1..=9"));
+    }
     let counter = unix_time / period;
-    let mut mac =
-        HmacSha1::new_from_slice(secret).map_err(|e| anyhow!("hmac key: {e}"))?;
+    let mut mac = HmacSha1::new_from_slice(secret).map_err(|e| anyhow!("hmac key: {e}"))?;
     mac.update(&counter.to_be_bytes());
     let hash = mac.finalize().into_bytes();
 
@@ -75,7 +87,7 @@ mod tests {
     #[test]
     fn rfc6238_vectors_sha1() {
         let secret = decode_secret(SEED_B32).unwrap();
-        assert_eq!(secret, b"12345678901234567890");
+        assert_eq!(secret.as_slice(), b"12345678901234567890");
         // (unix_time, expected 8-digit code) from RFC 6238 Appendix B, SHA1 column.
         let cases = [
             (59u64, "94287082"),
@@ -93,7 +105,7 @@ mod tests {
     fn base32_is_tolerant() {
         // lowercase + spaces + padding should still decode
         let s = decode_secret("gezd gnbv gy3t qojq gezd gnbv gy3t qojq").unwrap();
-        assert_eq!(s, b"12345678901234567890");
+        assert_eq!(s.as_slice(), b"12345678901234567890");
     }
 
     #[test]

@@ -153,7 +153,13 @@ pub fn aead_seal(key: &[u8; KEY_LEN], plaintext: &[u8], aad: &[u8]) -> Result<Se
     let nonce_bytes = random_bytes::<NONCE_LEN>();
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ct = cipher
-        .encrypt(nonce, Payload { msg: plaintext, aad })
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|_| anyhow!("encryption failed"))?;
     Ok(Sealed {
         nonce: nonce_bytes,
@@ -165,10 +171,13 @@ pub fn aead_seal(key: &[u8; KEY_LEN], plaintext: &[u8], aad: &[u8]) -> Result<Se
 /// wrong (wrong master password OR wrong Secret Key) OR the ciphertext was
 /// tampered with. This is the property that makes tampering loud, not silent:
 /// you get an Err, never silently-corrupted plaintext.
-pub fn aead_open(key: &[u8; KEY_LEN], sealed: &Sealed, aad: &[u8]) -> Result<Vec<u8>> {
+pub fn aead_open(key: &[u8; KEY_LEN], sealed: &Sealed, aad: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce = Nonce::from_slice(&sealed.nonce);
-    cipher
+    // Wrap the recovered plaintext in `Zeroizing` so the decrypted bytes (which
+    // may be a key, e.g. the unwrapped Vault Key) are wiped from the heap on drop
+    // instead of lingering in freed memory.
+    let pt = cipher
         .decrypt(
             nonce,
             Payload {
@@ -176,7 +185,10 @@ pub fn aead_open(key: &[u8; KEY_LEN], sealed: &Sealed, aad: &[u8]) -> Result<Vec
                 aad,
             },
         )
-        .map_err(|_| anyhow!("decryption failed: wrong password/Secret Key, or vault was tampered with"))
+        .map_err(|_| {
+            anyhow!("decryption failed: wrong password/Secret Key, or vault was tampered with")
+        })?;
+    Ok(Zeroizing::new(pt))
 }
 
 // =============================== tests ===============================
@@ -192,7 +204,7 @@ mod tests {
         let msg = b"hunter2 is a terrible password";
         let sealed = aead_seal(&key, msg, AAD).unwrap();
         let out = aead_open(&key, &sealed, AAD).unwrap();
-        assert_eq!(out, msg);
+        assert_eq!(out.as_slice(), msg);
     }
 
     #[test]
@@ -229,7 +241,10 @@ mod tests {
         sk2[0] ^= 0x01; // differ by one bit
         let m1 = derive_master_key("same-password", &sk1, &salt, &vid).unwrap();
         let m2 = derive_master_key("same-password", &sk2, &salt, &vid).unwrap();
-        assert_ne!(*m1, *m2, "different Secret Key must yield different master key");
+        assert_ne!(
+            *m1, *m2,
+            "different Secret Key must yield different master key"
+        );
     }
 
     #[test]
@@ -240,10 +255,17 @@ mod tests {
         // "café" with é as one code point (U+00E9) vs e + combining accent (U+0301).
         let precomposed = "caf\u{00E9}";
         let decomposed = "cafe\u{0301}";
-        assert_ne!(precomposed.as_bytes(), decomposed.as_bytes(), "inputs differ in bytes");
+        assert_ne!(
+            precomposed.as_bytes(),
+            decomposed.as_bytes(),
+            "inputs differ in bytes"
+        );
         let m1 = derive_master_key(precomposed, &sk, &salt, &vid).unwrap();
         let m2 = derive_master_key(decomposed, &sk, &salt, &vid).unwrap();
-        assert_eq!(*m1, *m2, "NFKD-equivalent passwords must derive the same key");
+        assert_eq!(
+            *m1, *m2,
+            "NFKD-equivalent passwords must derive the same key"
+        );
     }
 
     #[test]

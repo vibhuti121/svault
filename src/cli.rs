@@ -9,14 +9,14 @@ use crate::crypto::SECRET_KEY_LEN;
 /// Render the 16-byte Secret Key as a human-friendly grouped string, e.g.
 /// `SK1-A1B2-C3D4-E5F6-...`. The `SK1` prefix is a version tag so the format can
 /// evolve later. This is what the user writes down / stores like an Emergency Kit.
-pub fn format_secret_key(sk: &[u8; SECRET_KEY_LEN]) -> String {
-    let hex: String = sk.iter().map(|b| format!("{:02X}", b)).collect();
+pub fn format_secret_key(sk: &[u8; SECRET_KEY_LEN]) -> Zeroizing<String> {
+    let hex: Zeroizing<String> = Zeroizing::new(sk.iter().map(|b| format!("{:02X}", b)).collect());
     let groups: Vec<String> = hex
         .as_bytes()
         .chunks(4)
         .map(|c| String::from_utf8_lossy(c).into_owned())
         .collect();
-    format!("SK1-{}", groups.join("-"))
+    Zeroizing::new(format!("SK1-{}", groups.join("-")))
 }
 
 /// Parse a Secret Key string back to 16 bytes. Tolerant of the `SK1-` prefix,
@@ -26,11 +26,14 @@ pub fn parse_secret_key(s: &str) -> Result<[u8; SECRET_KEY_LEN]> {
     // Strip the version prefix FIRST — note '1' in "SK1" is a hex digit and would
     // otherwise leak into the parse. Match the prefix case-insensitively so a
     // pasted "sk1-..." works too.
-    let body = if body.len() >= 3 && body[..3].eq_ignore_ascii_case("sk1") {
-        let rest = &body[3..];
-        rest.strip_prefix('-').unwrap_or(rest)
-    } else {
-        body
+    // `get(..3)` returns None unless byte index 3 is a valid char boundary, so a
+    // pasted key starting with a multibyte UTF-8 char can't panic on the slice.
+    let body = match body.get(..3) {
+        Some(p) if p.eq_ignore_ascii_case("sk1") => {
+            let rest = &body[3..];
+            rest.strip_prefix('-').unwrap_or(rest)
+        }
+        _ => body,
     };
     let cleaned: String = body.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     if cleaned.len() != SECRET_KEY_LEN * 2 {

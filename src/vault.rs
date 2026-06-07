@@ -13,9 +13,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use zeroize::Zeroizing;
 
-use crate::crypto::{
-    self, Sealed, KEY_LEN, NONCE_LEN, SALT_LEN, SECRET_KEY_LEN, VAULT_ID_LEN,
-};
+use crate::crypto::{self, Sealed, KEY_LEN, NONCE_LEN, SALT_LEN, SECRET_KEY_LEN, VAULT_ID_LEN};
 
 const CURRENT_VERSION: u32 = 1;
 // AAD binds ciphertext to its purpose so a blob can't be replayed elsewhere.
@@ -46,8 +44,8 @@ impl SealedB64 {
 #[derive(Serialize, Deserialize)]
 struct VaultFile {
     version: u32,
-    vault_id: String,           // base64(16 bytes) — also used as HKDF salt for the Secret Key
-    salt: String,               // base64(16 bytes) — Argon2id salt (public, just needs to be unique)
+    vault_id: String, // base64(16 bytes) — also used as HKDF salt for the Secret Key
+    salt: String,     // base64(16 bytes) — Argon2id salt (public, just needs to be unique)
     wrapped_vault_key: SealedB64, // the random Vault Key, encrypted under the KEK
     entries: BTreeMap<String, SealedB64>, // name -> encrypted secret
 }
@@ -82,7 +80,10 @@ fn entry_aad(name: &str) -> Vec<u8> {
 /// user ONCE (we never persist it — like 1Password's Emergency Kit).
 pub fn init(path: &Path, password: &str) -> Result<[u8; SECRET_KEY_LEN]> {
     if path.exists() {
-        bail!("vault already exists at {} — refusing to overwrite", path.display());
+        bail!(
+            "vault already exists at {} — refusing to overwrite",
+            path.display()
+        );
     }
     let salt = crypto::random_bytes::<SALT_LEN>();
     let vault_id = crypto::random_bytes::<VAULT_ID_LEN>();
@@ -124,12 +125,14 @@ pub fn unlock(
     let kek = crypto::derive_kek(&master);
 
     let wrapped = file.wrapped_vault_key.to_sealed()?;
+    // `aead_open` returns the unwrapped Vault Key in a `Zeroizing<Vec<u8>>`, so
+    // this raw key copy is wiped from the heap when `vk_bytes` drops.
     let vk_bytes = crypto::aead_open(&kek, &wrapped, AAD_VAULT_KEY)
         .map_err(|_| anyhow!("could not unlock: wrong master password or Secret Key"))?;
-    let mut vault_key = Zeroizing::new([0u8; KEY_LEN]);
     if vk_bytes.len() != KEY_LEN {
         bail!("corrupt vault: bad vault key length");
     }
+    let mut vault_key = Zeroizing::new([0u8; KEY_LEN]);
     vault_key.copy_from_slice(&vk_bytes);
 
     Ok(UnlockedVault { vault_key, file })
@@ -156,8 +159,10 @@ impl UnlockedVault {
             .ok_or_else(|| anyhow!("no entry named '{name}'"))?;
         let sealed = entry.to_sealed()?;
         let pt = crypto::aead_open(&self.vault_key, &sealed, &entry_aad(name))?;
-        let s = String::from_utf8(pt).context("entry was not valid UTF-8")?;
-        Ok(Zeroizing::new(s))
+        // Validate UTF-8 without consuming `pt`, so the decrypted bytes stay in
+        // the `Zeroizing` buffer and get wiped on drop even on the error path.
+        let s = std::str::from_utf8(&pt).context("entry was not valid UTF-8")?;
+        Ok(Zeroizing::new(s.to_owned()))
     }
 
     /// List entry names only — values stay encrypted.
@@ -197,9 +202,35 @@ pub fn rotate_master(
 
 // ---- file IO helpers ----
 
+/// Write the vault ATOMICALLY: serialize, write to a sibling temp file, fsync it,
+/// then `rename` over the target. A crash/kill/full-disk mid-write then leaves
+/// EITHER the old complete file OR the new complete file — never a truncated,
+/// entry-losing half-write. `rename` is atomic on the same filesystem, which is
+/// why the temp lives in the same directory. On Unix we also create it 0600
+/// (owner-only) as defense-in-depth, even though the contents are zero-knowledge.
 fn write_file(path: &Path, file: &VaultFile) -> Result<()> {
+    use std::io::Write;
+
     let json = serde_json::to_string_pretty(file).context("serialize vault")?;
-    std::fs::write(path, json).with_context(|| format!("write {}", path.display()))?;
+    let tmp = path.with_extension("json.tmp");
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts
+        .open(&tmp)
+        .with_context(|| format!("create temp {}", tmp.display()))?;
+    f.write_all(json.as_bytes())
+        .with_context(|| format!("write {}", tmp.display()))?;
+    f.sync_all().context("fsync vault temp")?; // durable before the rename
+    drop(f);
+
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("atomically replace {}", path.display()))?;
     Ok(())
 }
 
@@ -304,11 +335,14 @@ mod tests {
         v.save(&path).unwrap();
 
         println!("\n=== Secret Key (shown once at init) ===");
-        println!("{}", crate::cli::format_secret_key(&sk));
+        println!("{}", *crate::cli::format_secret_key(&sk));
         println!("\n=== vault.json on disk — note: NO keys, NO plaintext ===");
         println!("{}", std::fs::read_to_string(&path).unwrap());
         let v2 = unlock(&path, "demo-master-password", &sk).unwrap();
-        println!("=== decrypted 'gmail' after reopening = {:?} ===", *v2.get("gmail").unwrap());
+        println!(
+            "=== decrypted 'gmail' after reopening = {:?} ===",
+            *v2.get("gmail").unwrap()
+        );
 
         std::fs::remove_file(&path).ok();
     }
@@ -322,7 +356,10 @@ mod tests {
         rotate_master(&mut v, &sk, "new-pw").unwrap();
         v.save(&path).unwrap();
 
-        assert!(unlock(&path, "old-pw", &sk).is_err(), "old pw must stop working");
+        assert!(
+            unlock(&path, "old-pw", &sk).is_err(),
+            "old pw must stop working"
+        );
         let v2 = unlock(&path, "new-pw", &sk).unwrap();
         assert_eq!(*v2.get("x").unwrap(), "keepme");
         std::fs::remove_file(&path).ok();
