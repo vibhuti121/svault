@@ -50,3 +50,8 @@ jobs:
 
       - name: Release build
         run: cargo build --release
+
+      - name: Security audit (RustSec advisories)
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

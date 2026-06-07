@@ -18,7 +18,7 @@ Every change must pass the gate before it is considered done. The gate is define
 once in the `Makefile` and mirrored in `.github/workflows/ci.yml`:
 
 ```
-make qa     # = fmt-check + clippy -D warnings + test + build
+make qa     # = fmt-check + clippy -D warnings + test + build + audit
 ```
 
 Equivalently:
@@ -28,12 +28,17 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
+cargo audit                    # needs: cargo install cargo-audit --locked
 ```
 
 Rules:
 - **Zero warnings.** clippy runs with `-D warnings`; warnings fail the build.
 - **Format is enforced.** Run `cargo fmt` before committing; CI runs `cargo fmt --check`.
 - **Tests must stay green** (currently 23 tests). Add tests for new behavior.
+- **No known-vulnerable deps.** `cargo audit` checks `Cargo.lock` against the RustSec
+  advisory DB. Note: advisories are published upstream, so a previously-green audit can go
+  red with no code change — when that happens, bump the flagged dep or document the
+  accepted risk; don't disable the check.
 
 ## Crypto hard rules (do not violate)
 - Never invent or hand-roll a cipher, hash, KDF, or MAC. Only compose vetted crates.

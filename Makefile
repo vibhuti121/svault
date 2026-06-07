@@ -7,10 +7,10 @@
 
 CARGO ?= cargo
 
-.PHONY: qa fmt fmt-check lint test build release clean run
+.PHONY: qa fmt fmt-check lint test build release audit clean run
 
-## qa: the full gate — what CI runs. Fails on any warning.
-qa: fmt-check lint test build
+## qa: the full gate — what CI runs. Fails on any warning or known CVE.
+qa: fmt-check lint test build audit
 	@echo "✅ QA gate passed."
 
 ## fmt: auto-format the code in place.
@@ -36,6 +36,11 @@ build:
 ## release: optimized build.
 release:
 	$(CARGO) build --release
+
+## audit: scan dependencies for known security advisories (RustSec).
+## Requires cargo-audit: `cargo install cargo-audit --locked`.
+audit:
+	$(CARGO) audit
 
 ## clean: remove build artifacts.
 clean:
